@@ -83,7 +83,11 @@ SecureData Mask 是一款 **纯浏览器端运行** 的 Excel 数据脱敏工具
 
 ### 在线使用
 
-直接打开 `standalone.html` 或 `SecureDataMask_Offline.html` 文件即可使用，无需安装任何依赖。
+👉 **[点击访问 SecureData Mask](https://securedata-mask-20260319-120000.app.hrainative.woa.com)**
+
+打开即用，无需安装任何依赖。
+
+> 💡 也可以下载 `standalone.html` 或 `SecureDataMask_Offline.html` 文件在本地离线使用。
 
 ### 本地开发
 
