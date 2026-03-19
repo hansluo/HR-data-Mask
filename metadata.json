@@ -1,0 +1,5 @@
+{
+  "name": "SecureData Mask - AI-Powered Excel Anonymizer",
+  "description": "A professional-grade, browser-based Excel desensitization tool that handles data locally for maximum security. Features AI-driven name mapping and statistical numerical randomization.",
+  "requestFramePermissions": []
+}

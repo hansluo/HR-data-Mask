@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecureData Mask - 离线版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .animate-fadeIn { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+<script>
+// ========== Types ==========
+const MaskingStrategy = {
+  NONE: 'NONE',
+  NAME_ORG: 'NAME_ORG',
+  NUMERIC_RANDOM: 'NUMERIC_RANDOM'
+};
+
+// ========== Anonymizer Service ==========
+const processDataLocal = (rows, configs) => {
+  const nameMappings = configs.map(() => new Map());
+  const nameCounters = configs.map(() => 1);
+
+  return rows.map((row) => {
+    return row.map((cell, colIdx) => {
+      const config = configs[colIdx];
+      if (!config || config.strategy === MaskingStrategy.NONE || cell === null || cell === undefined) {
+        return cell;
+      }
+
+      if (config.strategy === MaskingStrategy.NAME_ORG) {
+        const strVal = cell.toString().trim();
+        if (!strVal) return cell;
+
+        const mapping = nameMappings[colIdx];
+        if (mapping.has(strVal)) {
+          return mapping.get(strVal);
+        }
+
+        const prefix = (config.params && config.params.prefix) || '模拟';
+        const masked = `${prefix}${nameCounters[colIdx]++}`;
+        mapping.set(strVal, masked);
+        return masked;
+      }
+
+      if (config.strategy === MaskingStrategy.NUMERIC_RANDOM) {
+        const numVal = parseFloat(cell);
+        if (isNaN(numVal)) return cell;
+
+        const min = (config.params && config.params.min) ?? 0;
+        const max = (config.params && config.params.max) ?? 100;
+        const result = min + Math.random() * (max - min);
+        
+        const originalStr = cell.toString();
+        const decimalParts = originalStr.split('.');
+        const precision = decimalParts.length > 1 ? decimalParts[1].length : 0;
+        
+        return parseFloat(result.toFixed(precision));
+      }
+
+      return cell;
+    });
+  });
+};
+
+// ========== React Components ==========
+const { useState, useCallback, useMemo, useEffect } = React;
+const e = React.createElement;
+
+// Header Component
+const Header = ({ onOpenSettings }) => {
+  return e('header', { className: 'bg-white border-b border-slate-200 sticky top-0 z-50' },
+    e('div', { className: 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between' },
+      e('div', { className: 'flex items-center gap-2' },
+        e('div', { className: 'bg-blue-600 p-2 rounded-lg' },
+          e('i', { className: 'fa-solid fa-shield-halved text-white text-xl' })
+        ),
+        e('div', null,
+          e('h1', { className: 'text-xl font-bold tracking-tight text-slate-800' }, 
+            'SecureData ', e('span', { className: 'text-blue-600' }, 'Mask')
+          ),
+          e('p', { className: 'text-[10px] text-slate-500 uppercase tracking-widest font-semibold' }, 'AI-Powered Anonymizer')
+        )
+      ),
+      e('nav', { className: 'flex items-center gap-4 sm:gap-6' },
+        e('button', { 
+          onClick: onOpenSettings,
+          className: 'flex items-center gap-2 px-3 py-1.5 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-600 rounded-lg transition-all text-sm font-medium border border-transparent hover:border-blue-200'
+        },
+          e('i', { className: 'fa-solid fa-wand-magic-sparkles text-blue-500' }),
+          '模型配置'
+        ),
+        e('div', { className: 'h-6 w-px bg-slate-200 hidden sm:block' }),
+        e('div', { className: 'hidden sm:flex items-center gap-2 text-xs text-slate-500 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-100' },
+          e('span', { className: 'w-2 h-2 bg-green-500 rounded-full animate-pulse' }),
+          '本地环境已加密'
+        )
+      )
+    )
+  );
+};
+
+// FileUploader Component
+const FileUploader = ({ onUpload }) => {
+  return e('div', { className: 'flex flex-col items-center justify-center py-20' },
+    e('div', { className: 'bg-white p-12 rounded-3xl shadow-lg border-2 border-dashed border-slate-200 hover:border-blue-400 transition-all max-w-lg w-full text-center group' },
+      e('div', { className: 'w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-6 group-hover:bg-blue-100 transition-colors' },
+        e('i', { className: 'fa-solid fa-file-excel text-4xl text-blue-500' })
+      ),
+      e('h2', { className: 'text-2xl font-bold text-slate-800 mb-2' }, '上传 Excel 文件'),
+      e('p', { className: 'text-slate-500 mb-6' }, '支持 .xlsx, .xls 格式'),
+      e('label', { className: 'inline-block cursor-pointer' },
+        e('span', { className: 'bg-blue-600 hover:bg-blue-700 text-white font-semibold px-8 py-3 rounded-xl transition-all shadow-lg shadow-blue-200 inline-flex items-center gap-2' },
+          e('i', { className: 'fa-solid fa-upload' }),
+          '选择文件'
+        ),
+        e('input', { type: 'file', accept: '.xlsx,.xls', onChange: onUpload, className: 'hidden' })
+      )
+    )
+  );
+};
+
+// ConfigPanel Component
+const ConfigPanel = ({ config, onChange }) => {
+  if (!config) return null;
+
+  const handleStrategyChange = (ev) => {
+    const strategy = ev.target.value;
+    const defaultParams = strategy === MaskingStrategy.NAME_ORG 
+      ? { prefix: '模拟' } 
+      : strategy === MaskingStrategy.NUMERIC_RANDOM 
+        ? { min: 0, max: 100 } 
+        : {};
+    onChange({ ...config, strategy, params: defaultParams });
+  };
+
+  const headerText = config.header || '未知列';
+
+  return e('div', { className: 'p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 transition-all hover:border-blue-300 group' },
+    e('div', { className: 'flex items-center justify-between' },
+      e('span', { className: 'text-sm font-bold text-slate-700 truncate max-w-[150px]', title: headerText }, headerText),
+      e('select', { 
+        value: config.strategy || MaskingStrategy.NONE, 
+        onChange: handleStrategyChange,
+        className: 'text-xs bg-white border border-slate-300 rounded-md px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500'
+      },
+        e('option', { value: MaskingStrategy.NONE }, '不处理'),
+        e('option', { value: MaskingStrategy.NAME_ORG }, 'Type 1: 人名/组织 (AI化)'),
+        e('option', { value: MaskingStrategy.NUMERIC_RANDOM }, 'Type 2: 数值 (随机混淆)')
+      )
+    ),
+    config.strategy === MaskingStrategy.NAME_ORG && e('div', { className: 'flex items-center gap-2 animate-fadeIn' },
+      e('label', { className: 'text-[10px] uppercase font-bold text-slate-400' }, '前缀:'),
+      e('input', { 
+        type: 'text', 
+        value: (config.params && config.params.prefix) || '',
+        onChange: (ev) => onChange({ ...config, params: { ...config.params, prefix: ev.target.value } }),
+        placeholder: '如: 员工',
+        className: 'flex-1 text-xs px-2 py-1 border border-slate-200 rounded outline-none'
+      })
+    ),
+    config.strategy === MaskingStrategy.NUMERIC_RANDOM && e('div', { className: 'space-y-2 animate-fadeIn' },
+      e('label', { className: 'text-[10px] uppercase font-bold text-slate-400' }, '随机数值范围:'),
+      e('div', { className: 'flex items-center gap-2' },
+        e('div', { className: 'flex-1' },
+          e('span', { className: 'text-[9px] text-slate-400 block mb-0.5' }, '最小值'),
+          e('input', { 
+            type: 'number', 
+            value: (config.params && config.params.min) ?? 0,
+            onChange: (ev) => onChange({ ...config, params: { ...config.params, min: parseFloat(ev.target.value) } }),
+            className: 'w-full text-xs px-2 py-1 border border-slate-200 rounded outline-none'
+          })
+        ),
+        e('div', { className: 'text-slate-300 mt-4' }, '-'),
+        e('div', { className: 'flex-1' },
+          e('span', { className: 'text-[9px] text-slate-400 block mb-0.5' }, '最大值'),
+          e('input', { 
+            type: 'number', 
+            value: (config.params && config.params.max) ?? 100,
+            onChange: (ev) => onChange({ ...config, params: { ...config.params, max: parseFloat(ev.target.value) } }),
+            className: 'w-full text-xs px-2 py-1 border border-slate-200 rounded outline-none'
+          })
+        )
+      )
+    )
+  );
+};
+
+// PreviewTable Component
+const PreviewTable = ({ headers, rows }) => {
+  if (!headers || headers.length === 0) return e('p', { className: 'text-slate-400 text-sm' }, '暂无数据');
+
+  return e('table', { className: 'min-w-full text-sm' },
+    e('thead', null,
+      e('tr', { className: 'bg-slate-100' },
+        headers.map((h, i) => e('th', { key: i, className: 'px-4 py-2 text-left font-semibold text-slate-600 whitespace-nowrap' }, h || `列${i+1}`))
+      )
+    ),
+    e('tbody', null,
+      rows.map((row, ri) => e('tr', { key: ri, className: ri % 2 === 0 ? 'bg-white' : 'bg-slate-50' },
+        row.map((cell, ci) => e('td', { key: ci, className: 'px-4 py-2 text-slate-700 whitespace-nowrap' }, cell ?? ''))
+      ))
+    )
+  );
+};
+
+// SettingsModal Component
+const SettingsModal = ({ config, onSave, onClose }) => {
+  const [localConfig, setLocalConfig] = useState(config);
+
+  const handleSave = () => {
+    onSave(localConfig);
+    onClose();
+  };
+
+  return e('div', { className: 'fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm' },
+    e('div', { className: 'bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-200 animate-fadeIn' },
+      e('div', { className: 'flex items-center justify-between mb-6' },
+        e('h3', { className: 'text-xl font-bold text-slate-800 flex items-center gap-2' },
+          e('i', { className: 'fa-solid fa-gear text-blue-600' }),
+          '模型配置'
+        ),
+        e('button', { onClick: onClose, className: 'text-slate-400 hover:text-slate-600 transition-colors' },
+          e('i', { className: 'fa-solid fa-xmark text-xl' })
+        )
+      ),
+      e('div', { className: 'space-y-4' },
+        e('div', null,
+          e('label', { className: 'block text-sm font-semibold text-slate-700 mb-1.5' }, '服务商'),
+          e('select', {
+            value: localConfig.provider,
+            onChange: (ev) => setLocalConfig({ 
+              ...localConfig, 
+              provider: ev.target.value,
+              baseUrl: ev.target.value === 'gemini' ? '' : localConfig.baseUrl,
+              model: ev.target.value === 'gemini' ? 'gemini-1.5-flash' : localConfig.model
+            }),
+            className: 'w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 transition-all'
+          },
+            e('option', { value: 'gemini' }, 'Google Gemini'),
+            e('option', { value: 'openai-compatible' }, 'OpenAI 兼容 (如: 通义千问, DeepSeek)')
+          )
+        ),
+        e('div', null,
+          e('label', { className: 'block text-sm font-semibold text-slate-700 mb-1.5' }, 'API Key'),
+          e('input', {
+            type: 'password',
+            value: localConfig.apiKey,
+            onChange: (ev) => setLocalConfig({ ...localConfig, apiKey: ev.target.value }),
+            placeholder: '输入你的 API Key',
+            className: 'w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 transition-all'
+          })
+        ),
+        localConfig.provider === 'openai-compatible' && e('div', null,
+          e('label', { className: 'block text-sm font-semibold text-slate-700 mb-1.5' }, 'Base URL'),
+          e('input', {
+            type: 'text',
+            value: localConfig.baseUrl,
+            onChange: (ev) => setLocalConfig({ ...localConfig, baseUrl: ev.target.value }),
+            placeholder: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            className: 'w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm'
+          })
+        ),
+        e('div', null,
+          e('label', { className: 'block text-sm font-semibold text-slate-700 mb-1.5' }, '模型名称'),
+          e('input', {
+            type: 'text',
+            value: localConfig.model,
+            onChange: (ev) => setLocalConfig({ ...localConfig, model: ev.target.value }),
+            placeholder: localConfig.provider === 'gemini' ? 'gemini-1.5-flash' : 'qwen-turbo',
+            className: 'w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-blue-500 transition-all'
+          })
+        )
+      ),
+      e('div', { className: 'mt-8 flex gap-3' },
+        e('button', {
+          onClick: onClose,
+          className: 'flex-1 py-2.5 border border-slate-200 text-slate-600 font-semibold rounded-xl hover:bg-slate-50 transition-all'
+        }, '取消'),
+        e('button', {
+          onClick: handleSave,
+          className: 'flex-1 py-2.5 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition-all shadow-lg shadow-blue-200'
+        }, '保存配置')
+      ),
+      e('p', { className: 'mt-4 text-[11px] text-slate-400 text-center' }, '* 配置将安全地存储在浏览器的本地存储 (localStorage) 中。')
+    )
+  );
+};
+
+// Main App Component
+const App = () => {
+  const [fileData, setFileData] = useState(null);
+  const [configs, setConfigs] = useState([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  
+  const DEFAULT_LLM_CONFIG = {
+    provider: 'gemini',
+    apiKey: '',
+    baseUrl: '',
+    model: 'gemini-1.5-flash'
+  };
+
+  const [llmConfig, setLlmConfig] = useState(() => {
+    try {
+      const saved = localStorage.getItem('llm_config');
+      return saved ? JSON.parse(saved) : DEFAULT_LLM_CONFIG;
+    } catch (e) {
+      return DEFAULT_LLM_CONFIG;
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('llm_config', JSON.stringify(llmConfig));
+  }, [llmConfig]);
+
+  const suggestStrategies = async (headers) => {
+    // Always create default configs first (no API key required)
+    const defaultConfigs = headers.map(h => ({
+      header: h || '未知列',
+      strategy: MaskingStrategy.NONE,
+      params: {}
+    }));
+    setConfigs(defaultConfigs);
+
+    // If API key is configured, try to get AI suggestions
+    if (!llmConfig.apiKey) {
+      return;
+    }
+
+    setIsAiAnalyzing(true);
+    try {
+      let suggestions = [];
+
+      if (llmConfig.provider === 'openai-compatible' && llmConfig.baseUrl) {
+        const baseUrl = llmConfig.baseUrl.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${llmConfig.apiKey}`
+          },
+          body: JSON.stringify({
+            model: llmConfig.model,
+            messages: [{
+              role: 'user',
+              content: `Given these Excel headers: [${headers.join(', ')}]. Suggest which masking strategy is best for each. Options: NAME_ORG, NUMERIC_RANDOM, NONE. Return ONLY a JSON array of strings matching the headers order.`
+            }],
+            temperature: 0.1
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`API Request failed with status ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+          const text = data.choices[0].message.content;
+          const cleanJson = text.replace(/```json|```/g, '').trim();
+          suggestions = JSON.parse(cleanJson);
+        }
+      }
+
+      if (suggestions.length > 0) {
+        const newConfigs = headers.map((h, i) => ({
+          header: h || `Column ${i + 1}`,
+          strategy: suggestions[i] || MaskingStrategy.NONE,
+          params: suggestions[i] === MaskingStrategy.NUMERIC_RANDOM ? { min: 0, max: 100 } : { prefix: '模拟' }
+        }));
+        setConfigs(newConfigs);
+      }
+    } catch (error) {
+      console.warn("AI Suggestion failed, using defaults:", error.message);
+    } finally {
+      setIsAiAnalyzing(false);
+    }
+  };
+
+  const handleFileUpload = (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const bstr = evt.target.result;
+      const wb = XLSX.read(bstr, { type: 'binary' });
+      const wsname = wb.SheetNames[0];
+      const ws = wb.Sheets[wsname];
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+      if (data.length > 0) {
+        const headers = data[0];
+        const rows = data.slice(1);
+        setFileData({ name: wsname, headers, rows });
+        suggestStrategies(headers);
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const handleUpdateConfig = (index, newConfig) => {
+    const next = [...configs];
+    next[index] = newConfig;
+    setConfigs(next);
+  };
+
+  const handleExport = useCallback(() => {
+    if (!fileData) return;
+    setIsProcessing(true);
+
+    setTimeout(() => {
+      try {
+        const result = processDataLocal(fileData.rows, configs);
+        const worksheet = XLSX.utils.aoa_to_sheet([fileData.headers, ...result]);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Anonymized");
+        XLSX.writeFile(workbook, `anonymized_${fileData.name}.xlsx`);
+      } catch (err) {
+        alert("Processing failed. Please check your data.");
+      } finally {
+        setIsProcessing(false);
+      }
+    }, 100);
+  }, [fileData, configs]);
+
+  const previewData = useMemo(() => {
+    if (!fileData) return [];
+    return processDataLocal(fileData.rows.slice(0, 5), configs);
+  }, [fileData, configs]);
+
+  return e('div', { className: 'min-h-screen pb-20' },
+    e(Header, { onOpenSettings: () => setIsSettingsOpen(true) }),
+    e('main', { className: 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8' },
+      !fileData ? e(FileUploader, { onUpload: handleFileUpload }) :
+      e('div', { className: 'grid grid-cols-1 lg:grid-cols-3 gap-8' },
+        e('div', { className: 'lg:col-span-1 space-y-6' },
+          e('div', { className: 'bg-white p-6 rounded-2xl shadow-sm border border-slate-200' },
+            e('div', { className: 'flex items-center justify-between mb-4' },
+              e('h2', { className: 'text-lg font-semibold flex items-center gap-2' },
+                e('i', { className: 'fa-solid fa-sliders text-blue-500' }),
+                '脱敏配置'
+              ),
+              e('button', { 
+                onClick: () => setFileData(null),
+                className: 'text-sm text-slate-500 hover:text-red-500 transition-colors'
+              }, '重置上传')
+            ),
+            isAiAnalyzing && e('div', { className: 'mb-4 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm flex items-center gap-2 animate-pulse' },
+              e('i', { className: 'fa-solid fa-wand-magic-sparkles' }),
+              'AI 正在分析表头并生成建议...'
+            ),
+            !llmConfig.apiKey && e('div', { className: 'mb-4 p-3 bg-slate-50 text-slate-600 rounded-lg text-[11px] border border-slate-200' },
+              e('i', { className: 'fa-solid fa-info-circle mr-1 text-blue-500' }),
+              '未配置 AI 模型，请手动选择每列的脱敏策略。如需 AI 自动建议，请点击右上角配置。'
+            ),
+            e('div', { className: 'space-y-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar' },
+              configs.map((config, idx) => e(ConfigPanel, { 
+                key: idx, 
+                config: config, 
+                onChange: (updated) => handleUpdateConfig(idx, updated) 
+              }))
+            ),
+            e('button', {
+              onClick: handleExport,
+              disabled: isProcessing,
+              className: 'w-full mt-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-semibold rounded-xl transition-all shadow-lg shadow-blue-200 flex items-center justify-center gap-2'
+            },
+              isProcessing ? e('i', { className: 'fa-solid fa-circle-notch animate-spin' }) : e('i', { className: 'fa-solid fa-file-export' }),
+              isProcessing ? '处理中...' : '开始脱敏并导出'
+            )
+          )
+        ),
+        e('div', { className: 'lg:col-span-2 space-y-6' },
+          e('div', { className: 'bg-white p-6 rounded-2xl shadow-sm border border-slate-200 overflow-hidden' },
+            e('h2', { className: 'text-lg font-semibold mb-4 flex items-center gap-2' },
+              e('i', { className: 'fa-solid fa-eye text-green-500' }),
+              '实时脱敏预览 (前5行)'
+            ),
+            e('div', { className: 'overflow-x-auto' },
+              e(PreviewTable, { headers: fileData.headers, rows: previewData })
+            ),
+            e('p', { className: 'text-xs text-slate-400 mt-4 italic' }, '* 隐私安全：所有脱敏逻辑均在浏览器本地完成，原始敏感数据不会上传服务器。')
+          )
+        )
+      )
+    ),
+    isSettingsOpen && e(SettingsModal, { 
+      config: llmConfig, 
+      onSave: setLlmConfig, 
+      onClose: () => setIsSettingsOpen(false) 
+    })
+  );
+};
+
+// Mount App
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(e(App));
+</script>
+</body>
+</html>
